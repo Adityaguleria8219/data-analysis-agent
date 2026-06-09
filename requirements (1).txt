@@ -1,0 +1,9 @@
+langgraph
+langchain
+langchain-groq
+fastapi
+uvicorn
+pandas
+matplotlib
+streamlit
+python-multipart
