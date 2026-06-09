@@ -1,27 +1,18 @@
-
 import streamlit as st
+import os
+import json
 import pandas as pd
-import matplotlib.pyplot as plt
 import matplotlib
 matplotlib.use("Agg")
-import json
-import os
-import operator
-from typing import TypedDict, Annotated
+import matplotlib.pyplot as plt
 from io import StringIO
+import requests
 
-GROQ_API_KEY = os.environ.get("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", "")
-os.environ["GROQ_API_KEY"] = GROQ_API_KEY
-
-from langchain_core.tools import tool
-from langchain_groq import ChatGroq
-from langchain_core.messages import HumanMessage, SystemMessage
-from langgraph.graph import StateGraph, END
-from langgraph.prebuilt import ToolNode
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 
 st.set_page_config(page_title="Data Analysis Agent", page_icon="⚡", layout="wide")
 st.title("⚡ Data Analysis Agent")
-st.caption("Powered by LangGraph + Groq")
+st.caption("Powered by Groq + Llama 3")
 
 CSV_DATA = """date,product,category,region,units_sold,revenue,cost
 2024-01-05,Widget A,Electronics,North,120,2400,1200
@@ -49,154 +40,90 @@ CSV_DATA = """date,product,category,region,units_sold,revenue,cost
 2024-04-20,Gadget Y,Home,South,190,3800,1520
 2024-04-25,Widget B,Electronics,West,125,2500,1250"""
 
-_df = pd.read_csv(StringIO(CSV_DATA))
+df = pd.read_csv(StringIO(CSV_DATA))
 
-def _require_df(): return _df
+def ask_groq(question, data_summary):
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    prompt = f"""You are a data analysis expert. Here is a sales dataset summary:
+{data_summary}
 
-@tool
-def describe_dataset(dummy: str = "") -> str:
-    """Returns shape, columns, dtypes and basic stats. Always call this first."""
-    df = _require_df()
-    return json.dumps({
-        "rows": int(df.shape[0]), "columns": int(df.shape[1]),
-        "column_names": df.columns.tolist(),
-        "dtypes": {c: str(t) for c,t in df.dtypes.items()},
-        "sample": df.head(3).to_dict(orient="records")
-    }, indent=2)
+The user asks: {question}
 
-@tool
-def run_pandas_query(query_code: str) -> str:
-    """Runs a pandas expression on df. Do not redefine df.
-    Examples:
-      df.groupby('category')['revenue'].sum().to_dict()
-      df.sort_values('revenue', ascending=False).head(5).to_dict(orient='records')
-    """
-    df = _require_df()
+Instructions:
+- Answer based on the data
+- If they want a chart, respond with ONLY this JSON format: {{"chart": true, "type": "bar", "x": "category", "y": "revenue", "agg": "sum", "title": "Revenue by Category"}}
+- Otherwise just answer in plain text
+- Be concise and insightful"""
+
+    body = {
+        "model": "llama3-70b-8192",
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0,
+        "max_tokens": 500
+    }
     try:
-        result = eval(query_code, {"df": df, "pd": pd, "json": json})
-        if isinstance(result, pd.DataFrame): return result.to_json(orient="records")
-        if isinstance(result, pd.Series): return result.to_json()
-        return json.dumps(result, default=str)
+        res = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers=headers, json=body, timeout=30
+        )
+        return res.json()["choices"][0]["message"]["content"]
     except Exception as e:
         return f"Error: {e}"
 
-@tool
-def generate_chart(chart_spec: str) -> str:
-    """Generates a chart and saves it.
-    chart_spec JSON keys:
-      chart_type: bar | line | pie | scatter | hist
-      x: column for x axis
-      y: column for y axis
-      title: chart title
-      agg: sum | mean | count
-    """
-    df = _require_df()
+def make_chart(chart_type, x_col, y_col, agg, title):
     try:
-        spec = json.loads(chart_spec)
-        chart_type = spec.get("chart_type","bar")
-        x_col = spec.get("x"); y_col = spec.get("y")
-        title = spec.get("title","Chart"); agg = spec.get("agg","sum")
-        fig, ax = plt.subplots(figsize=(8,5))
-        if chart_type == "hist":
-            df[y_col or x_col].hist(ax=ax, bins=15, color="#6366f1")
-        elif chart_type == "scatter":
-            ax.scatter(df[x_col], df[y_col], color="#6366f1", alpha=0.7)
-        elif chart_type == "pie":
+        fig, ax = plt.subplots(figsize=(8, 5))
+        agg_map = {"sum": "sum", "mean": "mean", "count": "count"}
+        if chart_type == "pie":
             data = df.groupby(x_col)[y_col].sum()
             ax.pie(data.values, labels=data.index, autopct="%1.1f%%")
-        else:
-            agg_map = {"sum":"sum","mean":"mean","count":"count"}
-            data = df.groupby(x_col)[y_col].agg(agg_map.get(agg,"sum"))
-            if chart_type == "line":
-                ax.plot(data.index.astype(str), data.values, marker="o", color="#6366f1")
-            else:
-                ax.bar(data.index.astype(str), data.values, color="#6366f1")
+        elif chart_type == "line":
+            data = df.groupby(x_col)[y_col].agg(agg_map.get(agg, "sum"))
+            ax.plot(data.index.astype(str), data.values, marker="o", color="#6366f1")
             plt.xticks(rotation=45, ha="right")
-        ax.set_title(title); plt.tight_layout()
+        else:
+            data = df.groupby(x_col)[y_col].agg(agg_map.get(agg, "sum"))
+            ax.bar(data.index.astype(str), data.values, color="#6366f1")
+            plt.xticks(rotation=45, ha="right")
+        ax.set_title(title)
+        plt.tight_layout()
         plt.savefig("/tmp/chart.png", dpi=120, bbox_inches="tight")
         plt.close(fig)
-        return json.dumps({"status":"Chart saved","title":title})
+        return True
     except Exception as e:
-        plt.close("all"); return json.dumps({"error":str(e)})
+        plt.close("all")
+        return False
 
-@tool
-def get_column_insights(column_name: str) -> str:
-    """Returns detailed stats for a single column."""
-    df = _require_df()
-    if column_name not in df.columns:
-        return f"Column '{column_name}' not found. Available: {df.columns.tolist()}"
-    col = df[column_name]
-    result = {"column":column_name,"dtype":str(col.dtype),"nulls":int(col.isnull().sum()),"unique":int(col.nunique())}
-    if pd.api.types.is_numeric_dtype(col):
-        result.update({"min":float(col.min()),"max":float(col.max()),"mean":float(col.mean()),"median":float(col.median()),"std":float(col.std())})
-    else:
-        result["top_values"] = col.value_counts().head(10).to_dict()
-    return json.dumps(result, indent=2)
-
-ALL_TOOLS = [describe_dataset, run_pandas_query, generate_chart, get_column_insights]
-
-class AgentState(TypedDict):
-    messages: Annotated[list, operator.add]
-
-SYSTEM_PROMPT = """You are an expert Data Analysis Agent with access to a loaded CSV dataset.
-You have 4 tools:
-1. describe_dataset — always call this FIRST
-2. run_pandas_query — run aggregations and filters
-3. generate_chart — create charts
-4. get_column_insights — deep dive into one column
-Always run actual queries, never guess numbers."""
-
-@st.cache_resource
-def get_agent():
-    llm = ChatGroq(model="llama3-groq-70b-8192-tool-use-preview", temperature=0)
-    llm_with_tools = llm.bind_tools(ALL_TOOLS)
-    def call_llm(state):
-        messages = state["messages"]
-        if not any(isinstance(m, SystemMessage) for m in messages):
-            messages = [SystemMessage(content=SYSTEM_PROMPT)] + messages
-        return {"messages": [llm_with_tools.invoke(messages)]}
-    def should_continue(state):
-        last = state["messages"][-1]
-        return "tools" if (hasattr(last,"tool_calls") and last.tool_calls) else END
-    graph = StateGraph(AgentState)
-    graph.add_node("llm", call_llm)
-    graph.add_node("tools", ToolNode(ALL_TOOLS))
-    graph.set_entry_point("llm")
-    graph.add_conditional_edges("llm", should_continue)
-    graph.add_edge("tools", "llm")
-    return graph.compile()
-
-def run_agent(user_message):
-    agent = get_agent()
-    messages = [HumanMessage(content=user_message)]
-    result = agent.invoke({"messages": messages})
-    final_messages = result["messages"]
-    tool_calls_made = []
-    for msg in final_messages:
-        if hasattr(msg, "tool_calls") and msg.tool_calls:
-            for tc in msg.tool_calls:
-                tool_calls_made.append(tc["name"])
-    final_text = final_messages[-1].content
-    if isinstance(final_text, list):
-        final_text = " ".join(b.get("text","") for b in final_text if isinstance(b,dict))
-    return {"text": final_text, "tool_calls": tool_calls_made}
-
-if "messages" not in st.session_state:
-    st.session_state.messages = []
+data_summary = f"""
+Shape: {df.shape[0]} rows x {df.shape[1]} columns
+Columns: {df.columns.tolist()}
+Products: {df['product'].unique().tolist()}
+Categories: {df['category'].unique().tolist()}
+Regions: {df['region'].unique().tolist()}
+Total Revenue: {df['revenue'].sum()}
+Revenue by product: {df.groupby('product')['revenue'].sum().to_dict()}
+Revenue by category: {df.groupby('category')['revenue'].sum().to_dict()}
+Revenue by region: {df.groupby('region')['revenue'].sum().to_dict()}
+Avg units sold: {df['units_sold'].mean():.1f}
+"""
 
 with st.sidebar:
-    st.success(f"✅ Dataset loaded! {len(_df)} rows × {len(_df.columns)} cols")
+    st.success(f"✅ Dataset loaded! {len(df)} rows × {len(df.columns)} cols")
     st.write("**Columns:**")
-    for col in _df.columns:
+    for col in df.columns:
         st.code(col, language=None)
     st.divider()
     st.header("💡 Try These")
     samples = [
-        "Give me an overview",
+        "Give me an overview of this dataset",
         "Which product has highest revenue?",
         "Bar chart of revenue by category",
         "Which region performs best?",
-        "Insights on the revenue column",
+        "Show a pie chart of revenue by product",
+        "What is the average units sold?",
     ]
     for q in samples:
         if st.button(q, use_container_width=True):
@@ -205,13 +132,14 @@ with st.sidebar:
         st.session_state.messages = []
         st.rerun()
 
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.write(msg["content"])
         if msg.get("chart"):
             st.image("/tmp/chart.png")
-        if msg.get("tool_calls"):
-            st.caption(f"🔧 Tools: {', '.join(msg['tool_calls'])}")
 
 pending = st.session_state.pop("pending", None)
 user_input = st.chat_input("Ask anything about your data...") or pending
@@ -220,18 +148,32 @@ if user_input:
     st.session_state.messages.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.write(user_input)
+
     with st.chat_message("assistant"):
         with st.spinner("Thinking..."):
-            result = run_agent(user_input)
-        st.write(result["text"])
-        chart_generated = "generate_chart" in result["tool_calls"]
+            response = ask_groq(user_input, data_summary)
+        chart_generated = False
+        try:
+            data = json.loads(response)
+            if isinstance(data, dict) and data.get("chart"):
+                chart_generated = make_chart(
+                    data.get("type", "bar"),
+                    data.get("x"), data.get("y"),
+                    data.get("agg", "sum"),
+                    data.get("title", "Chart")
+                )
+                answer = f"📊 Here's your {data.get('title', 'chart')}!"
+            else:
+                answer = response
+        except:
+            answer = response
+
+        st.write(answer)
         if chart_generated:
             st.image("/tmp/chart.png")
-        if result["tool_calls"]:
-            st.caption(f"🔧 Tools: {', '.join(result['tool_calls'])}")
+
     st.session_state.messages.append({
         "role": "assistant",
-        "content": result["text"],
-        "tool_calls": result["tool_calls"],
+        "content": answer,
         "chart": chart_generated,
     })
