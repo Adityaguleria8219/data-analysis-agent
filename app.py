@@ -12,7 +12,7 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
 st.set_page_config(page_title="Data Analysis Agent", page_icon="⚡", layout="wide")
 st.title("⚡ Data Analysis Agent")
-st.caption("Powered by Gemini + Python")
+st.caption("Powered by Gemini 2.0 + Python")
 
 CSV_DATA = """date,product,category,region,units_sold,revenue,cost
 2024-01-05,Widget A,Electronics,North,120,2400,1200
@@ -57,16 +57,17 @@ Instructions:
 - Be concise and insightful"""
 
     body = {"contents": [{"parts": [{"text": prompt}]}]}
+    full_response = {}
     try:
         res = requests.post(
-            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}",
+            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}",
             headers={"Content-Type": "application/json"},
             json=body, timeout=30
         )
         full_response = res.json()
         return full_response["candidates"][0]["content"]["parts"][0]["text"]
     except Exception as e:
-        return f"Error: {full_response if 'full_response' in locals() else e}"
+        return f"Error: {full_response if full_response else e}"
 
 def make_chart(chart_type, x_col, y_col, agg, title):
     try:
