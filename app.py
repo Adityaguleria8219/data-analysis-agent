@@ -8,11 +8,11 @@ import matplotlib.pyplot as plt
 from io import StringIO
 import requests
 
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
 st.set_page_config(page_title="Data Analysis Agent", page_icon="⚡", layout="wide")
 st.title("⚡ Data Analysis Agent")
-st.caption("Powered by Groq + Llama 3")
+st.caption("Powered by Gemini + Python")
 
 CSV_DATA = """date,product,category,region,units_sold,revenue,cost
 2024-01-05,Widget A,Electronics,North,120,2400,1200
@@ -42,11 +42,7 @@ CSV_DATA = """date,product,category,region,units_sold,revenue,cost
 
 df = pd.read_csv(StringIO(CSV_DATA))
 
-def ask_groq(question, data_summary):
-    headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
-        "Content-Type": "application/json"
-    }
+def ask_gemini(question, data_summary):
     prompt = f"""You are a data analysis expert. Here is a sales dataset summary:
 {data_summary}
 
@@ -55,23 +51,22 @@ The user asks: {question}
 Instructions:
 - Answer based on the data
 - If they want a chart, respond with ONLY this JSON format: {{"chart": true, "type": "bar", "x": "category", "y": "revenue", "agg": "sum", "title": "Revenue by Category"}}
+- chart type can be: bar, line, pie
+- x and y must be actual column names from: date, product, category, region, units_sold, revenue, cost
 - Otherwise just answer in plain text
 - Be concise and insightful"""
 
-    body = {
-        "model": "llama3-70b-8192",
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0,
-        "max_tokens": 500
-    }
+    body = {"contents": [{"parts": [{"text": prompt}]}]}
     try:
         res = requests.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers=headers, json=body, timeout=30
+            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}",
+            headers={"Content-Type": "application/json"},
+            json=body, timeout=30
         )
-        return res.json()["choices"][0]["message"]["content"]
+        full_response = res.json()
+        return full_response["candidates"][0]["content"]["parts"][0]["text"]
     except Exception as e:
-        return f"Error: {e}"
+        return f"Error: {full_response if 'full_response' in locals() else e}"
 
 def make_chart(chart_type, x_col, y_col, agg, title):
     try:
@@ -151,10 +146,12 @@ if user_input:
 
     with st.chat_message("assistant"):
         with st.spinner("Thinking..."):
-            response = ask_groq(user_input, data_summary)
+            response = ask_gemini(user_input, data_summary)
+
         chart_generated = False
         try:
-            data = json.loads(response)
+            clean = response.strip().replace("```json", "").replace("```", "").strip()
+            data = json.loads(clean)
             if isinstance(data, dict) and data.get("chart"):
                 chart_generated = make_chart(
                     data.get("type", "bar"),
